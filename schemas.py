@@ -11,8 +11,8 @@ Model name is converted to lowercase for the collection name:
 - BlogPost -> "blogs" collection
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Optional, List
 
 # Example schemas (replace with your own):
 
@@ -38,11 +38,22 @@ class Product(BaseModel):
     category: str = Field(..., description="Product category")
     in_stock: bool = Field(True, description="Whether product is in stock")
 
-# Add your own schemas here:
-# --------------------------------------------------
+# Customization settings schema for the site
+class QuizQuestion(BaseModel):
+    q: str
+    a: List[str]
+    correct: int = Field(0, ge=0)
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class Settings(BaseModel):
+    """
+    Site customization options (single document)
+    Collection name: "settings"
+    """
+    key: str = Field("singleton", description="Singleton key to identify unique doc")
+    title: str = Field("Playful Mario‑vibe Game Hub", description="Hero title text")
+    subtitle: str = Field("A vibrant landing page with a quiz and a roulette game.", description="Hero subtitle text")
+    primaryColor: str = Field("#ef4444", description="Primary brand color (hex)")
+    accentColor: str = Field("#f59e0b", description="Accent color (hex)")
+    heroLogoUrl: Optional[str] = Field(None, description="URL for hero logo image")
+    wheelBgUrl: Optional[str] = Field(None, description="URL for roulette background image")
+    quizQuestions: Optional[List[QuizQuestion]] = None

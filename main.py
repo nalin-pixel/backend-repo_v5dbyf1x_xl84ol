@@ -1,6 +1,12 @@
 import os
-from fastapi import FastAPI
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from database import db
+from schemas import Settings, QuizQuestion
+from datetime import datetime
 
 app = FastAPI()
 
@@ -12,17 +18,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+COLLECTION = "settings"
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+# Helpers
+
+def get_settings_doc():
+    doc = db[COLLECTION].find_one({"key": "singleton"})
+    if not doc:
+        default = Settings().model_dump()
+        default["created_at"] = datetime.utcnow()
+        default["updated_at"] = datetime.utcnow()
+        db[COLLECTION].insert_one(default)
+        doc = db[COLLECTION].find_one({"key": "singleton"})
+    return doc
+
+@app.get("/api/settings")
+async def get_settings():
+    doc = get_settings_doc()
+    doc["_id"] = str(doc["_id"])  # stringify for JSON
+    return doc
+
+class SettingsUpdate(BaseModel):
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    primaryColor: Optional[str] = None
+    accentColor: Optional[str] = None
+    heroLogoUrl: Optional[str] = None
+    wheelBgUrl: Optional[str] = None
+    quizQuestions: Optional[list[QuizQuestion]] = None
+
+@app.post("/api/settings")
+async def update_settings(payload: SettingsUpdate):
+    updates = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if not updates:
+        return JSONResponse({"updated": False, "message": "No changes"})
+    updates["updated_at"] = datetime.utcnow()
+    db[COLLECTION].update_one({"key": "singleton"}, {"$set": updates}, upsert=True)
+    return {"updated": True}
+
+# Simple in-DB file store using GridFS-like bucket is not available here; we'll store as base64 strings.
+# For simplicity and speed in this environment, store uploaded file bytes into a dedicated collection and return an id URL.
+from bson import ObjectId
+
+MEDIA_COLLECTION = "media"
+
+@app.post("/api/upload")
+async def upload_image(file: UploadFile = File(...)):
+    content = await file.read()
+    doc = {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "data": content,
+        "created_at": datetime.utcnow(),
+    }
+    res = db[MEDIA_COLLECTION].insert_one(doc)
+    return {"url": f"/api/media/{str(res.inserted_id)}"}
+
+from fastapi import HTTPException
+from fastapi.responses import Response
+
+@app.get("/api/media/{media_id}")
+async def get_media(media_id: str):
+    try:
+        oid = ObjectId(media_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid media id")
+    doc = db[MEDIA_COLLECTION].find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=doc["data"], media_type=doc.get("content_type") or "application/octet-stream")
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
     response = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
@@ -31,39 +98,25 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
             response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
+            response["database_name"] = db.name
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = db.list_collection_names()[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
+
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
     return response
-
 
 if __name__ == "__main__":
     import uvicorn
